@@ -12,7 +12,7 @@ def remove_duplicate_rows(input_file, output_file):
 
 
 if __name__ == "__main__":
-    input_file = "DatasetWords.xlsx"      
+    input_file = "DatasetLanguage.xlsx"      
     output_file = "output.xlsx"  
 
     remove_duplicate_rows(input_file, output_file)
