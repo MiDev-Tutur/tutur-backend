@@ -1,7 +1,7 @@
 import hashlib
 from fastapi import FastAPI, HTTPException, Depends
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import create_engine, Column, Integer, String
+from sqlalchemy import Enum, create_engine, Column, Integer, String
 from sqlalchemy.orm import sessionmaker, declarative_base, Session
 from passlib.context import CryptContext
 from fastapi.responses import JSONResponse
@@ -39,6 +39,8 @@ class User(Base):
     userName = Column(String(100))
     userEmail = Column(String(100), unique=True)
     userPassword = Column(String(255))
+    userParticipantStatus = Column(Enum("active", "nonactive"), default="nonactive", nullable=True)
+    userReferenceFolderId = Column(String(255))
 
 class UserCreate(BaseModel):
     userName: str
@@ -49,6 +51,8 @@ class UserUpdate(BaseModel):
     userName: str | None = None
     userEmail: EmailStr | None = None
     userPassword: str | None = None
+    userParticipantStatus: str | None = None
+    userReferenceFolderId: str | None = None
 
 def get_db():
     db = SessionLocal()
@@ -184,11 +188,14 @@ def create_user(user: UserCreate, db: Session = Depends(get_db)):
         raise HTTPException(status_code=400, detail="Email already registered")
 
     hashed_password = pwd_context.hash(user.userPassword)
+    userReferenceFolderId = f"folder_{hashlib.sha256(user.userEmail.encode()).hexdigest()[:8]}"
 
     new_user = User(
         userName=user.userName,
         userEmail=user.userEmail,
-        userPassword=hashed_password
+        userPassword=hashed_password,
+        userParticipantStatus="nonactive",
+        userReferenceFolderId=userReferenceFolderId
     )
 
     db.add(new_user)
@@ -211,7 +218,9 @@ def get_user(idUser: int, db: Session = Depends(get_db)):
     return {
         "idUser": user.idUser,
         "userName": user.userName,
-        "userEmail": user.userEmail
+        "userEmail": user.userEmail,
+        "userParticipantStatus": user.userParticipantStatus,
+        "userReferenceFolderId": user.userReferenceFolderId
     }
 
 @app.put("/api/tutur/users/{idUser}")
@@ -230,6 +239,9 @@ def update_user(idUser: int, user_update: UserUpdate, db: Session = Depends(get_
 
     if user_update.userPassword:
         user.userPassword = pwd_context.hash(user_update.userPassword)
+
+    if user_update.userParticipantStatus:
+        user.userParticipantStatus = user_update.userParticipantStatus
 
     db.commit()
     db.refresh(user)
