@@ -94,7 +94,8 @@ trainer = Trainer(
     data_collator=data_collator
 )
 
-trainer.train()
+# trainer.train()
+trainer.train(resume_from_checkpoint=True)
 
 trainer.save_model("./translator_model_lite")
 tokenizer.save_pretrained("./translator_model_lite")

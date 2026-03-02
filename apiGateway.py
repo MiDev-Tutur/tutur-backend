@@ -1,15 +1,21 @@
 import hashlib
-from fastapi import FastAPI, HTTPException, Depends
+from fastapi import FastAPI, HTTPException, Depends, Path
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import Enum, create_engine, Column, Integer, String
-from sqlalchemy.orm import sessionmaker, declarative_base, Session
+from sqlalchemy import Enum, create_engine, Column, Integer, String, ForeignKey
+from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship, aliased
 from passlib.context import CryptContext
 from fastapi.responses import JSONResponse
+from pydantic import BaseModel
+from typing import Optional
 import pandas as pd
 import os
 import random
 import json
 import re
+import torch
+from transformers import T5Tokenizer, T5ForConditionalGeneration
+
+MODEL_PATH = "./translator_model_lite"
 
 app = FastAPI(title="Tutur API Gateway")
 
@@ -20,6 +26,7 @@ DATASET_PATH = os.path.join(
 )
 COURSE_PATH = os.path.join("courses", "courses.json")
 URBAN_LEGENDS_PATH = os.path.join("datasets", "urbanLegends")
+BASE_DATASET_PATH = os.path.join("datasets", "folkSongs")
 DATABASE_URL = "mysql+pymysql://root@localhost/db_tutur"
 
 engine = create_engine(
@@ -31,6 +38,28 @@ SessionLocal = sessionmaker(bind=engine)
 Base = declarative_base()
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
+
+app = FastAPI()
+
+if not os.path.exists(DATASET_PATH):
+    raise FileNotFoundError("DatasetLanguage.xlsx not found in datasets folder")
+
+df = pd.read_excel(DATASET_PATH)
+df.columns = df.columns.str.lower()
+
+if "english" not in df.columns:
+    raise Exception("Dataset must contain 'english' column")
+
+tokenizer = T5Tokenizer.from_pretrained(MODEL_PATH)
+model = T5ForConditionalGeneration.from_pretrained(MODEL_PATH)
+
+device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+model.to(device)
+model.eval()
+
+class TranslateRequest(BaseModel):
+    text: str
+    target_language: str
 
 class User(Base):
     __tablename__ = "users"
@@ -53,6 +82,46 @@ class UserUpdate(BaseModel):
     userPassword: str | None = None
     userParticipantStatus: str | None = None
     userReferenceFolderId: str | None = None
+
+class Course(Base):
+    __tablename__ = "courses"
+
+    idCourse = Column(Integer, primary_key=True, index=True)
+    idUser = Column(Integer, ForeignKey("users.idUser"), nullable=False)
+    idDominantLanguage = Column(Integer, nullable=False)
+    idLocalLanguage = Column(Integer, nullable=False)
+    courseStep = Column(Integer, default=0)
+
+    user = relationship("User")
+
+class CourseCreate(BaseModel):
+    idUser: int
+    idDominantLanguage: int
+    idLocalLanguage: int
+    courseStep: int = 0
+
+class CourseUpdate(BaseModel):
+    idDominantLanguage: int | None = None
+    idLocalLanguage: int | None = None
+    courseStep: int | None = None
+
+class Language(Base):
+    __tablename__ = "languages"
+
+    idLanguage = Column(Integer, primary_key=True, index=True)
+    languageName = Column(String(100), nullable=False, unique=True)
+    languageType = Column(Enum("dominant", "local"), nullable=False)
+    languageStatus = Column(Enum("registered", "unregistered"), default="unregistered", nullable=True)
+
+class LanguageCreate(BaseModel):
+    languageName: str
+    languageType: str
+    languageStatus: str = "unregistered"
+
+class LanguageUpdate(BaseModel):
+    languageName: Optional[str] = None
+    languageType: Optional[str] = None
+    languageStatus: Optional[str] = None
 
 def get_db():
     db = SessionLocal()
@@ -115,63 +184,6 @@ def get_dictionary(dominant: str, local: str):
                 "local_language": local_col,
                 "total": len(words),
                 "words": words
-            }
-        )
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/tutur/translate/{dominant}/{local}/{words}")
-def translate_word(dominant: str, local: str, words: str):
-
-    if not os.path.exists(DATASET_PATH):
-        raise HTTPException(status_code=404, detail="Dataset file not found")
-
-    try:
-        df = pd.read_excel(DATASET_PATH, engine="openpyxl")
-        df.columns = df.columns.str.lower()
-
-        dominant_col = dominant.lower()
-        local_col = local.lower()
-        search_word = words.lower()
-
-        if dominant_col not in df.columns:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Column '{dominant}' not found in dataset"
-            )
-
-        if local_col not in df.columns:
-            raise HTTPException(
-                status_code=400,
-                detail=f"Column '{local}' not found in dataset"
-            )
-
-        if "type" not in df.columns:
-            raise HTTPException(
-                status_code=400,
-                detail="Column 'type' not found in dataset"
-            )
-
-        filtered_df = df[df["type"].str.lower() == "word"]
-        result = filtered_df[
-            filtered_df[dominant_col].astype(str).str.lower() == search_word
-        ]
-
-        if result.empty:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Word '{words}' not found in '{dominant}' dictionary"
-            )
-
-        row = result.iloc[0]
-
-        return JSONResponse(
-            content={
-                "dominant_language": dominant_col,
-                "local_language": local_col,
-                "input_word": words,
-                "translation": str(row[local_col]) if pd.notna(row[local_col]) else None
             }
         )
 
@@ -260,6 +272,199 @@ def delete_user(idUser: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "User deleted successfully"}
+
+# User Courses Management Endpoints
+
+@app.post("/api/tutur/courses")
+def create_course(course: CourseCreate, db: Session = Depends(get_db)):
+    user = db.query(User).filter(User.idUser == course.idUser).first()
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    new_course = Course(
+        idUser=course.idUser,
+        idDominantLanguage=course.idDominantLanguage,
+        idLocalLanguage=course.idLocalLanguage,
+        courseStep=course.courseStep
+    )
+
+    db.add(new_course)
+    db.commit()
+    db.refresh(new_course)
+
+    return {
+        "message": "Course created successfully",
+        "idCourse": new_course.idCourse
+    }
+
+@app.get("/api/tutur/courses")
+def get_all_courses(db: Session = Depends(get_db)):
+
+    courses = db.query(Course).all()
+
+    return courses
+
+@app.get("/api/tutur/courses/{idCourse}")
+def get_course(idCourse: int, db: Session = Depends(get_db)):
+
+    DominantLanguage = aliased(Language)
+    LocalLanguage = aliased(Language)
+
+    result = (
+        db.query(Course, User, DominantLanguage, LocalLanguage)
+        .join(User, Course.idUser == User.idUser)
+        .join(DominantLanguage, Course.idDominantLanguage == DominantLanguage.idLanguage)
+        .join(LocalLanguage, Course.idLocalLanguage == LocalLanguage.idLanguage)
+        .filter(Course.idCourse == idCourse)
+        .first()
+    )
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    course, user, dominant_language, local_language = result
+
+    def to_dict(obj):
+        return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+
+    return {
+        "idCourse": course.idCourse,
+        "idUser": course.idUser,
+        "idDominantLanguage": course.idDominantLanguage,
+        "idLocalLanguage": course.idLocalLanguage,
+        "courseStep": course.courseStep,
+        "detail": {
+            "user": to_dict(user),
+            "dominantLanguage": to_dict(dominant_language),
+            "localLanguage": to_dict(local_language)
+        }
+    }
+
+@app.put("/api/tutur/courses/{idCourse}")
+def update_course(idCourse: int, course: CourseUpdate, db: Session = Depends(get_db)):
+    existing_course = db.query(Course).filter(Course.idCourse == idCourse).first()
+
+    if not existing_course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    if course.idDominantLanguage is not None:
+        existing_course.idDominantLanguage = course.idDominantLanguage
+
+    if course.idLocalLanguage is not None:
+        existing_course.idLocalLanguage = course.idLocalLanguage
+
+    if course.courseStep is not None:
+        existing_course.courseStep = course.courseStep
+
+    db.commit()
+    db.refresh(existing_course)
+
+    return {
+        "message": "Course updated successfully"
+    }
+
+@app.delete("/api/tutur/courses/{idCourse}")
+def delete_course(idCourse: int, db: Session = Depends(get_db)):
+
+    course = db.query(Course).filter(Course.idCourse == idCourse).first()
+
+    if not course:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    db.delete(course)
+    db.commit()
+
+    return {
+        "message": "Course deleted successfully"
+    }
+
+# Language Management Endpoints
+
+@app.post("/api/tutur/languages")
+def create_language(language: LanguageCreate, db: Session = Depends(get_db)):
+
+    existing_language = db.query(Language).filter(
+        Language.languageName == language.languageName
+    ).first()
+
+    if existing_language:
+        raise HTTPException(status_code=400, detail="Language already exists")
+
+    new_language = Language(
+        languageName=language.languageName,
+        languageType=language.languageType,
+        languageStatus=language.languageStatus
+    )
+
+    db.add(new_language)
+    db.commit()
+    db.refresh(new_language)
+
+    return {
+        "message": "Language created successfully",
+        "idLanguage": new_language.idLanguage
+    }
+
+@app.get("/api/tutur/languages")
+def get_all_languages(db: Session = Depends(get_db)):
+
+    languages = db.query(Language).all()
+    return languages
+
+@app.get("/api/tutur/languages/{idLanguage}")
+def get_language(idLanguage: int, db: Session = Depends(get_db)):
+
+    language = db.query(Language).filter(
+        Language.idLanguage == idLanguage
+    ).first()
+
+    if not language:
+        raise HTTPException(status_code=404, detail="Language not found")
+
+    return language
+
+@app.put("/api/tutur/languages/{idLanguage}")
+def update_language(idLanguage: int, language: LanguageUpdate, db: Session = Depends(get_db)):
+
+    existing_language = db.query(Language).filter(
+        Language.idLanguage == idLanguage
+    ).first()
+
+    if not existing_language:
+        raise HTTPException(status_code=404, detail="Language not found")
+
+    if language.languageName is not None:
+        existing_language.languageName = language.languageName
+
+    if language.languageType is not None:
+        existing_language.languageType = language.languageType
+
+    if language.languageStatus is not None:
+        existing_language.languageStatus = language.languageStatus
+
+    db.commit()
+    db.refresh(existing_language)
+
+    return {
+        "message": "Language updated successfully"
+    }
+
+@app.delete("/api/tutur/languages/{idLanguage}")
+def delete_language(idLanguage: int, db: Session = Depends(get_db)):
+
+    language = db.query(Language).filter(
+        Language.idLanguage == idLanguage
+    ).first()
+
+    if not language:
+        raise HTTPException(status_code=404, detail="Language not found")
+
+    db.delete(language)
+    db.commit()
+
+    return {
+        "message": "Language deleted successfully"
+    }
 
 # Courses Management Endpoints
 
@@ -680,6 +885,237 @@ def generate_urban_legend_test(lang: str, title: str):
         "lang": story_data.get("lang"),
         "questions": questions
     }
+
+# Folk Song Endpoint
+
+@app.get("/api/tutur/folk-songs")
+def get_all_folk_songs():
+
+    if not os.path.exists(BASE_DATASET_PATH):
+        raise HTTPException(status_code=404, detail="Dataset folder not found")
+
+    all_songs = []
+
+    for language_folder in os.listdir(BASE_DATASET_PATH):
+        language_path = os.path.join(BASE_DATASET_PATH, language_folder)
+
+        if os.path.isdir(language_path):
+
+            for file in os.listdir(language_path):
+                if file.endswith(".json"):
+                    file_path = os.path.join(language_path, file)
+
+                    with open(file_path, "r", encoding="utf-8") as f:
+                        data = json.load(f)
+                        all_songs.append(data)
+
+    return {
+        "total": len(all_songs),
+        "songs": all_songs
+    }
+
+@app.get("/api/tutur/folk-songs/{language}")
+def get_songs_by_language(language: str = Path(...)):
+
+    language_path = os.path.join(BASE_DATASET_PATH, language.lower())
+
+    if not os.path.exists(language_path):
+        raise HTTPException(status_code=404, detail="Language folder not found")
+
+    songs = []
+
+    for file in os.listdir(language_path):
+        if file.endswith(".json"):
+            file_path = os.path.join(language_path, file)
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                songs.append(data)
+
+    return {
+        "language": language,
+        "total": len(songs),
+        "songs": songs
+    }
+
+@app.get("/api/tutur/folk-song/{song_key}")
+def get_song_by_key(song_key: str):
+
+    if not os.path.exists(BASE_DATASET_PATH):
+        raise HTTPException(status_code=404, detail="Dataset folder not found")
+    
+    for language_folder in os.listdir(BASE_DATASET_PATH):
+        language_path = os.path.join(BASE_DATASET_PATH, language_folder)
+
+        if os.path.isdir(language_path):
+
+            for file in os.listdir(language_path):
+                if file.endswith(".json"):
+
+                    file_name_without_ext = os.path.splitext(file)[0]
+
+                    if file_name_without_ext.lower() == song_key.lower():
+                        file_path = os.path.join(language_path, file)
+
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            data = json.load(f)
+
+                        return data
+
+    raise HTTPException(status_code=404, detail="Song not found")
+
+@app.get("/api/tutur/test/folk-song/{song_key}")
+def generate_test_from_song(song_key: str):
+
+    if not os.path.exists(BASE_DATASET_PATH):
+        raise HTTPException(status_code=404, detail="Dataset folder not found")
+
+    song_data = None
+
+    for language_folder in os.listdir(BASE_DATASET_PATH):
+        language_path = os.path.join(BASE_DATASET_PATH, language_folder)
+
+        if os.path.isdir(language_path):
+            for file in os.listdir(language_path):
+                if file.endswith(".json"):
+                    name_without_ext = os.path.splitext(file)[0]
+
+                    if name_without_ext.lower() == song_key.lower():
+                        file_path = os.path.join(language_path, file)
+                        with open(file_path, "r", encoding="utf-8") as f:
+                            song_data = json.load(f)
+                        break
+
+    if not song_data:
+        raise HTTPException(status_code=404, detail="Song not found")
+
+    timestamps = song_data.get("timestamp", [])
+
+    word_pool = []
+    for item in timestamps:
+        words = re.findall(r'\b\w+\b', item["text"])
+        word_pool.extend(words)
+
+    word_pool = list(set(word_pool))
+
+    questions = []
+
+    for item in timestamps:
+
+        original_text = item["text"]
+        words = re.findall(r'\b\w+\b', original_text)
+
+        if len(words) < 2:
+            continue
+
+        remove_count = random.randint(1, min(3, len(words)))
+        remove_indexes = sorted(random.sample(range(len(words)), remove_count))
+
+        removed_words = [words[i] for i in remove_indexes]
+
+        blank_words = words.copy()
+        for i in remove_indexes:
+            blank_words[i] = "____"
+
+        question_sentence = " ".join(blank_words)
+
+        options = removed_words.copy()
+
+        distractor_pool = [w for w in word_pool if w not in removed_words]
+
+        while len(options) < 5 and distractor_pool:
+            random_word = random.choice(distractor_pool)
+            if random_word not in options:
+                options.append(random_word)
+
+        random.shuffle(options)
+
+        questions.append({
+            "start": item["start"],
+            "end": item["end"],
+            "question": question_sentence,
+            "answer": removed_words,
+            "option": options,
+            "text": original_text
+        })
+
+    return {
+        "title": song_data.get("title"),
+        "lang": song_data.get("lang"),
+        "link": song_data.get("link"),
+        "start": song_data.get("start"),
+        "end": song_data.get("end"),
+        "total_questions": len(questions),
+        "timestamp": questions
+    }
+
+# NLP Model Translation Endpoint
+
+def lookup_translation(text: str, target_lang: str):
+    text = text.strip().lower()
+    target_lang = target_lang.strip().lower()
+
+    if target_lang not in df.columns:
+        return None
+
+    match = df[df["english"].str.lower() == text]
+
+    if not match.empty:
+        return match.iloc[0][target_lang]
+
+    return None
+
+def model_translate(text: str, target_lang: str):
+    input_text = f"translate english to {target_lang}: {text}"
+
+    inputs = tokenizer(
+        input_text,
+        return_tensors="pt",
+        max_length=64,
+        truncation=True
+    ).to(device)
+
+    with torch.no_grad():
+        outputs = model.generate(
+            **inputs,
+            max_length=64,
+            num_beams=4,
+            early_stopping=True
+        )
+
+    return tokenizer.decode(outputs[0], skip_special_tokens=True)
+
+@app.post("/api/tutur/translate")
+def translate(req: TranslateRequest):
+
+    text = req.text.strip()
+    target_lang = req.target_language.lower()
+
+    if not text:
+        raise HTTPException(status_code=400, detail="Text cannot be empty")
+
+    direct_result = lookup_translation(text, target_lang)
+
+    if direct_result:
+        return {
+            "method": "dataset_lookup",
+            "source_language": "english",
+            "target_language": target_lang,
+            "original_text": text,
+            "translated_text": direct_result
+        }
+
+    model_result = model_translate(text, target_lang)
+
+    return {
+        "method": "model_inference",
+        "source_language": "english",
+        "target_language": target_lang,
+        "original_text": text,
+        "translated_text": model_result
+    }
+
+
 
 
 
