@@ -3,9 +3,9 @@
 -- https://www.phpmyadmin.net/
 --
 -- Host: 127.0.0.1
--- Waktu pembuatan: 24 Feb 2026 pada 17.51
--- Versi server: 10.4.32-MariaDB
--- Versi PHP: 8.2.12
+-- Generation Time: Mar 02, 2026 at 09:34 AM
+-- Server version: 10.4.32-MariaDB
+-- PHP Version: 8.2.12
 
 SET SQL_MODE = "NO_AUTO_VALUE_ON_ZERO";
 START TRANSACTION;
@@ -24,7 +24,7 @@ SET time_zone = "+00:00";
 -- --------------------------------------------------------
 
 --
--- Struktur dari tabel `courses`
+-- Table structure for table `courses`
 --
 
 CREATE TABLE `courses` (
@@ -35,10 +35,17 @@ CREATE TABLE `courses` (
   `courseStep` int(11) NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+--
+-- Dumping data for table `courses`
+--
+
+INSERT INTO `courses` (`idCourse`, `idUser`, `idDominantLanguage`, `idLocalLanguage`, `courseStep`) VALUES
+(1, 2, 1, 4, 0);
+
 -- --------------------------------------------------------
 
 --
--- Struktur dari tabel `languages`
+-- Table structure for table `languages`
 --
 
 CREATE TABLE `languages` (
@@ -48,10 +55,24 @@ CREATE TABLE `languages` (
   `languageStatus` enum('registered','unregistered','','') NOT NULL
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
+--
+-- Dumping data for table `languages`
+--
+
+INSERT INTO `languages` (`idLanguage`, `languageName`, `languageType`, `languageStatus`) VALUES
+(1, 'Indonesian', 'dominant', 'registered'),
+(2, 'Malay', 'dominant', 'registered'),
+(3, 'English', 'dominant', 'registered'),
+(4, 'Minang', 'local', 'registered'),
+(5, 'Java', 'local', 'registered'),
+(6, 'Batak Toba', 'local', 'registered'),
+(7, 'Iban', 'local', 'registered'),
+(8, 'Sarawak Malay', 'local', 'registered');
+
 -- --------------------------------------------------------
 
 --
--- Struktur dari tabel `users`
+-- Table structure for table `users`
 --
 
 CREATE TABLE `users` (
@@ -64,7 +85,7 @@ CREATE TABLE `users` (
 ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_general_ci;
 
 --
--- Dumping data untuk tabel `users`
+-- Dumping data for table `users`
 --
 
 INSERT INTO `users` (`idUser`, `userName`, `userEmail`, `userPassword`, `userParticipantStatus`, `userReferenceFolderId`) VALUES
@@ -75,41 +96,41 @@ INSERT INTO `users` (`idUser`, `userName`, `userEmail`, `userPassword`, `userPar
 --
 
 --
--- Indeks untuk tabel `courses`
+-- Indexes for table `courses`
 --
 ALTER TABLE `courses`
   ADD PRIMARY KEY (`idCourse`);
 
 --
--- Indeks untuk tabel `languages`
+-- Indexes for table `languages`
 --
 ALTER TABLE `languages`
   ADD PRIMARY KEY (`idLanguage`);
 
 --
--- Indeks untuk tabel `users`
+-- Indexes for table `users`
 --
 ALTER TABLE `users`
   ADD PRIMARY KEY (`idUser`);
 
 --
--- AUTO_INCREMENT untuk tabel yang dibuang
+-- AUTO_INCREMENT for dumped tables
 --
 
 --
--- AUTO_INCREMENT untuk tabel `courses`
+-- AUTO_INCREMENT for table `courses`
 --
 ALTER TABLE `courses`
-  MODIFY `idCourse` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `idCourse` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=2;
 
 --
--- AUTO_INCREMENT untuk tabel `languages`
+-- AUTO_INCREMENT for table `languages`
 --
 ALTER TABLE `languages`
-  MODIFY `idLanguage` int(11) NOT NULL AUTO_INCREMENT;
+  MODIFY `idLanguage` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=10;
 
 --
--- AUTO_INCREMENT untuk tabel `users`
+-- AUTO_INCREMENT for table `users`
 --
 ALTER TABLE `users`
   MODIFY `idUser` int(11) NOT NULL AUTO_INCREMENT, AUTO_INCREMENT=3;
