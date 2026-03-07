@@ -5,8 +5,8 @@ from sqlalchemy import Enum, create_engine, Column, Integer, String, ForeignKey
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship, aliased
 from passlib.context import CryptContext
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
-from typing import Optional
+from typing import List, Optional
+from typing import List, Optional
 import pandas as pd
 import os
 import random
@@ -122,6 +122,21 @@ class LanguageUpdate(BaseModel):
     languageName: Optional[str] = None
     languageType: Optional[str] = None
     languageStatus: Optional[str] = None
+
+class JoinRequest(BaseModel):
+    idUser: int
+
+class AddLanguageRequest(BaseModel):
+    idUser: int
+    languageName: str
+    dominantLanguage: str
+
+class TranslationUpdateItem(BaseModel):
+    row_position: int
+    translation: Optional[str]
+
+class UpdateTranslationRequest(BaseModel):
+    translations: List[TranslationUpdateItem]
 
 def get_db():
     db = SessionLocal()
@@ -468,41 +483,7 @@ def delete_language(idLanguage: int, db: Session = Depends(get_db)):
 
 # Courses Management Endpoints
 
-@app.get("/api/tutur/course/word/{step}/{dominant}/{local}")
-def get_word_course(step: int, dominant: str, local: str):
-
-    if dominant not in df.columns or local not in df.columns:
-        raise HTTPException(status_code=400, detail="Language column not found")
-
-    if not os.path.exists(COURSE_PATH):
-        raise HTTPException(status_code=404, detail="Course file not found")
-
-    with open(COURSE_PATH, "r", encoding="utf-8") as f:
-        courses = json.load(f)
-
-    selected_step = None
-
-    for topic in courses.values():
-        for item in topic:
-            if item["step"] == step:
-                selected_step = item
-                break
-
-    if not selected_step:
-        raise HTTPException(status_code=404, detail="Step not found")
-
-    if "listWords" not in selected_step:
-        raise HTTPException(status_code=400, detail="Step is not word type")
-
-    row_positions = selected_step["listWords"]
-
-    if not row_positions:
-        raise HTTPException(status_code=400, detail="No word data available")
-
-    words_df = df[df["row_position"].isin(row_positions)]
-
-    if words_df.empty:
-        raise HTTPException(status_code=404, detail="No matching data found")
+def generate_word_questions(words_df, dominant, local):
 
     questions = []
 
@@ -522,74 +503,26 @@ def get_word_course(step: int, dominant: str, local: str):
         distractors = [w for w in option_pool if w != correct_answer]
         random.shuffle(distractors)
 
-        options = distractors[:4]
-        options.append(correct_answer)
-
+        options = distractors[:4] + [correct_answer]
         options = list(set(options))
-
         random.shuffle(options)
 
         questions.append({
             "question": question_text,
-            "options": options,        # daftar pilihan
-            "answer": correct_answer,  # jawaban benar
+            "options": options,
+            "answer": correct_answer,
             "type": direction
         })
 
     random.shuffle(questions)
-    questions = questions[:10]
+    return questions[:10]
 
-    return {
-        "questions": questions
-    }
-
-@app.get("/api/tutur/course/phrase/{step}/{dominant}/{local}")
-def get_phrase_course(step: int, dominant: str, local: str):
-
-    if dominant not in df.columns or local not in df.columns:
-        raise HTTPException(status_code=400, detail="Language column not found")
-
-    if not os.path.exists(COURSE_PATH):
-        raise HTTPException(status_code=404, detail="Course file not found")
-
-    with open(COURSE_PATH, "r", encoding="utf-8") as f:
-        courses = json.load(f)
-
-    selected_step = None
-    previous_step = None
-
-    for topic in courses.values():
-        for item in topic:
-            if item["step"] == step:
-                selected_step = item
-            if item["step"] == step - 1:
-                previous_step = item
-
-    if not selected_step:
-        raise HTTPException(status_code=404, detail="Step not found")
-
-    if "listPhrases" not in selected_step:
-        raise HTTPException(status_code=400, detail="Step is not phrase type")
-
-    if not previous_step or "listWords" not in previous_step:
-        raise HTTPException(status_code=400, detail="Previous step must be word type")
-
-    phrase_rows = selected_step["listPhrases"]
-    word_rows = previous_step["listWords"]
-
-    phrase_df = df[df["row_position"].isin(phrase_rows)]
-    word_df = df[df["row_position"].isin(word_rows)]
-
-    if phrase_df.empty:
-        raise HTTPException(status_code=404, detail="No phrase data found")
+def generate_phrase_questions(phrase_df, word_df, dominant, local):
 
     questions = []
 
     phrase_list = phrase_df.to_dict("records")
     word_list = word_df.to_dict("records")
-
-    if not phrase_list:
-        raise HTTPException(status_code=404, detail="No phrase data found")
 
     while len(questions) < 10:
 
@@ -602,19 +535,6 @@ def get_phrase_course(step: int, dominant: str, local: str):
             correct_answer = row[local]
 
             option_pool = [p[local] for p in phrase_list]
-            distractors = [x for x in option_pool if x != correct_answer]
-            random.shuffle(distractors)
-
-            options = distractors[:4] + [correct_answer]
-            options = list(set(options))
-            random.shuffle(options)
-
-            questions.append({
-                "question": question_text,
-                "options": options,
-                "answer": correct_answer,
-                "type": "dominant"
-            })
 
         elif question_type == "local":
 
@@ -622,19 +542,6 @@ def get_phrase_course(step: int, dominant: str, local: str):
             correct_answer = row[dominant]
 
             option_pool = [p[dominant] for p in phrase_list]
-            distractors = [x for x in option_pool if x != correct_answer]
-            random.shuffle(distractors)
-
-            options = distractors[:4] + [correct_answer]
-            options = list(set(options))
-            random.shuffle(options)
-
-            questions.append({
-                "question": question_text,
-                "options": options,
-                "answer": correct_answer,
-                "type": "local"
-            })
 
         else:
 
@@ -648,6 +555,7 @@ def get_phrase_course(step: int, dominant: str, local: str):
             blank_phrase = local_phrase.replace(removed_word, "____", 1)
 
             option_pool = [w[local] for w in word_list]
+
             distractors = [w for w in option_pool if w != removed_word]
             random.shuffle(distractors)
 
@@ -662,55 +570,30 @@ def get_phrase_course(step: int, dominant: str, local: str):
                 "type": "blank"
             })
 
-    return {"questions": questions}
+            continue
 
-@app.get("/api/tutur/course/sentence/{step}/{dominant}/{local}")
-def get_sentence_course(step: int, dominant: str, local: str):
+        distractors = [x for x in option_pool if x != correct_answer]
+        random.shuffle(distractors)
 
-    if dominant not in df.columns or local not in df.columns:
-        raise HTTPException(status_code=400, detail="Language column not found")
+        options = distractors[:4] + [correct_answer]
+        options = list(set(options))
+        random.shuffle(options)
 
-    if not os.path.exists(COURSE_PATH):
-        raise HTTPException(status_code=404, detail="Course file not found")
+        questions.append({
+            "question": question_text,
+            "options": options,
+            "answer": correct_answer,
+            "type": question_type
+        })
 
-    with open(COURSE_PATH, "r", encoding="utf-8") as f:
-        courses = json.load(f)
+    return questions
 
-    selected_step = None
-    word_step = None  # step -2
-
-    for topic in courses.values():
-        for item in topic:
-            if item["step"] == step:
-                selected_step = item
-            if item["step"] == step - 2:
-                word_step = item
-
-    if not selected_step:
-        raise HTTPException(status_code=404, detail="Step not found")
-
-    if "listSentences" not in selected_step:
-        raise HTTPException(status_code=400, detail="Step is not sentence type")
-
-    if not word_step or "listWords" not in word_step:
-        raise HTTPException(status_code=400, detail="Step -2 must be word type")
-
-    sentence_rows = selected_step["listSentences"]
-    word_rows = word_step["listWords"]
-
-    sentence_df = df[df["row_position"].isin(sentence_rows)]
-    word_df = df[df["row_position"].isin(word_rows)]
-
-    if sentence_df.empty:
-        raise HTTPException(status_code=404, detail="No sentence data found")
+def generate_sentence_questions(sentence_df, word_df, dominant, local):
 
     questions = []
 
     sentence_list = sentence_df.to_dict("records")
     word_list = word_df.to_dict("records")
-
-    if not sentence_list:
-        raise HTTPException(status_code=404, detail="No sentence data found")
 
     while len(questions) < 10:
 
@@ -723,19 +606,6 @@ def get_sentence_course(step: int, dominant: str, local: str):
             correct_answer = row[local]
 
             option_pool = [s[local] for s in sentence_list]
-            distractors = [x for x in option_pool if x != correct_answer]
-            random.shuffle(distractors)
-
-            options = distractors[:4] + [correct_answer]
-            options = list(set(options))
-            random.shuffle(options)
-
-            questions.append({
-                "question": question_text,
-                "options": options,
-                "answer": correct_answer,
-                "type": "dominant"
-            })
 
         elif question_type == "local":
 
@@ -743,19 +613,6 @@ def get_sentence_course(step: int, dominant: str, local: str):
             correct_answer = row[dominant]
 
             option_pool = [s[dominant] for s in sentence_list]
-            distractors = [x for x in option_pool if x != correct_answer]
-            random.shuffle(distractors)
-
-            options = distractors[:4] + [correct_answer]
-            options = list(set(options))
-            random.shuffle(options)
-
-            questions.append({
-                "question": question_text,
-                "options": options,
-                "answer": correct_answer,
-                "type": "local"
-            })
 
         else:
 
@@ -769,6 +626,7 @@ def get_sentence_course(step: int, dominant: str, local: str):
             blank_sentence = local_sentence.replace(removed_word, "____", 1)
 
             option_pool = [w[local] for w in word_list]
+
             distractors = [w for w in option_pool if w != removed_word]
             random.shuffle(distractors)
 
@@ -782,6 +640,164 @@ def get_sentence_course(step: int, dominant: str, local: str):
                 "answer": removed_word,
                 "type": "blank"
             })
+
+            continue
+
+        distractors = [x for x in option_pool if x != correct_answer]
+        random.shuffle(distractors)
+
+        options = distractors[:4] + [correct_answer]
+        options = list(set(options))
+        random.shuffle(options)
+
+        questions.append({
+            "question": question_text,
+            "options": options,
+            "answer": correct_answer,
+            "type": question_type
+        })
+
+    return questions
+
+def find_step(courses, step):
+
+    for topic in courses.values():
+        for item in topic:
+            if item["step"] == step:
+                return item
+
+    return None
+
+@app.get("/api/tutur/course/{dominant}/{local}")
+def get_all_course(dominant: str, local: str):
+
+    if dominant not in df.columns or local not in df.columns:
+        raise HTTPException(status_code=400, detail="Language column not found")
+
+    if not os.path.exists(COURSE_PATH):
+        raise HTTPException(status_code=404, detail="Course file not found")
+
+    with open(COURSE_PATH, "r", encoding="utf-8") as f:
+        courses = json.load(f)
+
+    result = []
+
+    for topic in courses.values():
+        for item in topic:
+
+            step = item["step"]
+
+            if "listWords" in item:
+
+                rows = item["listWords"]
+                words_df = df[df["row_position"].isin(rows)]
+
+                questions = generate_word_questions(words_df, dominant, local)
+
+            elif "listPhrases" in item:
+
+                prev_step = find_step(courses, step - 1)
+
+                if not prev_step:
+                    continue
+
+                phrase_df = df[df["row_position"].isin(item["listPhrases"])]
+                word_df = df[df["row_position"].isin(prev_step["listWords"])]
+
+                questions = generate_phrase_questions(
+                    phrase_df,
+                    word_df,
+                    dominant,
+                    local
+                )
+
+            elif "listSentences" in item:
+
+                word_step = find_step(courses, step - 2)
+
+                if not word_step:
+                    continue
+
+                sentence_df = df[df["row_position"].isin(item["listSentences"])]
+                word_df = df[df["row_position"].isin(word_step["listWords"])]
+
+                questions = generate_sentence_questions(
+                    sentence_df,
+                    word_df,
+                    dominant,
+                    local
+                )
+
+            else:
+                continue
+
+            result.append({
+                "step": step,
+                "questions": questions
+            })
+
+    result = sorted(result, key=lambda x: x["step"])
+
+    return {
+        "total_step": len(result),
+        "total_questions": len(result) * 10,
+        "courses": result
+    }
+
+@app.get("/api/tutur/course/{step}/{dominant}/{local}")
+def get_course_by_step(step: int, dominant: str, local: str):
+
+    if dominant not in df.columns or local not in df.columns:
+        raise HTTPException(status_code=400, detail="Language column not found")
+
+    if not os.path.exists(COURSE_PATH):
+        raise HTTPException(status_code=404, detail="Course file not found")
+
+    with open(COURSE_PATH, "r", encoding="utf-8") as f:
+        courses = json.load(f)
+
+    selected_step = None
+    previous_step = None
+    word_step = None
+
+    for topic in courses.values():
+        for item in topic:
+
+            if item["step"] == step:
+                selected_step = item
+
+            if item["step"] == step - 1:
+                previous_step = item
+
+            if item["step"] == step - 2:
+                word_step = item
+
+    if not selected_step:
+        raise HTTPException(status_code=404, detail="Step not found")
+
+    if "listWords" in selected_step:
+
+        rows = selected_step["listWords"]
+        words_df = df[df["row_position"].isin(rows)]
+
+        questions = generate_word_questions(words_df, dominant, local)
+
+    elif "listPhrases" in selected_step:
+
+        phrase_df = df[df["row_position"].isin(selected_step["listPhrases"])]
+        word_df = df[df["row_position"].isin(previous_step["listWords"])]
+
+        questions = generate_phrase_questions(phrase_df, word_df, dominant, local)
+
+    elif "listSentences" in selected_step:
+
+        sentence_df = df[df["row_position"].isin(selected_step["listSentences"])]
+        word_df = df[df["row_position"].isin(word_step["listWords"])]
+
+        questions = generate_sentence_questions(sentence_df, word_df, dominant, local)
+
+    else:
+        raise HTTPException(status_code=400, detail="Unknown step type")
 
     return {"questions": questions}
 
@@ -1117,107 +1133,150 @@ def translate(req: TranslateRequest):
 
 # Community Participation Endpoints
 
-@app.post("/api/tutur/community/join/{idUser}")
-def join_community(idUser: int, db: Session = Depends(get_db)):
+@app.post("/api/tutur/community/join")
+def join_community(data: JoinRequest, db: Session = Depends(get_db)):
 
-    user = db.query(User).filter(User.idUser == idUser).first()
+    user = db.query(User).filter(User.idUser == data.idUser).first()
+    string_idUser = str(data.idUser)
 
     if not user:
-        raise HTTPException(status_code=404, detail="User not found")
+        raise HTTPException(
+            status_code=404,
+            detail="User not found"
+        )
 
     if user.userParticipantStatus == "active":
-        raise HTTPException(status_code=400, detail="User already participant")
+        return {
+            "status": "success",
+            "message": "User already joined community",
+            "folder": user.userReferenceFolderId
+        }
 
-    # aktifkan status partisipan
-    user.userParticipantStatus = "active"
-    db.commit()
+    try:
+        hashtext = hashlib.md5(string_idUser.encode()).hexdigest()[:8]
 
-    # buat folder base
-    base_path = os.path.join("databases", "activeParticipants")
-    os.makedirs(base_path, exist_ok=True)
+        folder_name = f"folder_{hashtext}"
+        base_dir = os.path.dirname(os.path.abspath(__file__))
+        folder_path = os.path.join(
+            base_dir,
+            "databases",
+            "activeParticipants",
+            folder_name
+        )
 
-    # buat folder user
-    user_folder = os.path.join(base_path, user.userReferenceFolderId)
-    os.makedirs(user_folder, exist_ok=True)
+        if not os.path.exists(folder_path):
+            os.makedirs(folder_path)
 
-    translation_file = os.path.join(user_folder, "translation.json")
+        user.userParticipantStatus = "active"
+        user.userReferenceFolderId = folder_name
 
-    # baca dataset
-    df = pd.read_excel(DATASET_PATH)
-    df.columns = df.columns.str.lower()
+        db.commit()
 
-    if "row_position" not in df.columns:
-        df["row_position"] = df.index + 2
+        return {
+            "status": "success",
+            "message": "User successfully joined community",
+            "folderCreated": folder_name
+        }
 
-    translations = []
+    except Exception as e:
+        db.rollback()
+        raise HTTPException(
+            status_code=500,
+            detail=f"Gagal join community: {str(e)}"
+        )
 
-    for _, row in df.iterrows():
+def normalize_language_name(name: str):
+    return name.lower().replace(" ", "_")
 
-        source_word = None
+@app.post("/api/tutur/community/addLanguage")
+def add_language(data: AddLanguageRequest, db: Session = Depends(get_db)):
 
-        if "english" in df.columns:
-            source_word = row["english"]
-        elif "indonesian" in df.columns:
-            source_word = row["indonesian"]
+    user = db.query(User).filter(User.idUser == data.idUser).first()
 
-        translations.append({
-            "row_position": int(row["row_position"]),
-            "type": row["type"] if "type" in df.columns else "word",
-            "source": source_word,
-            "translation": None
-        })
-
-    data = {
-        "language_name": None,
-        "dominant_language": None,
-        "translations": translations
-    }
-
-    with open(translation_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
-
-    return {
-        "message": "User successfully joined community",
-        "folder": user.userReferenceFolderId,
-        "total_items": len(translations)
-    }
-
-
-class SetLanguageRequest(BaseModel):
-    language_name: str
-    dominant_language: str
-
-
-@app.post("/api/tutur/community/set-language/{idUser}")
-def set_language(idUser: int, req: SetLanguageRequest, db: Session = Depends(get_db)):
-    # validasi input
-    user = db.query(User).filter(User.idUser == idUser).first()
-
-
-    # cek user
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    # cek status partisipan
-    folder_path = os.path.join(
+    if not user.userReferenceFolderId:
+        raise HTTPException(status_code=400, detail="User not joined community")
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+    user_folder = os.path.join(
+        base_dir,
         "databases",
         "activeParticipants",
         user.userReferenceFolderId
     )
 
-    # cek file translation
-    translation_file = os.path.join(folder_path, "translation.json")
-    with open(translation_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
-    data["language_name"] = req.language_name
-    data["dominant_language"] = req.dominant_language
+    if not os.path.exists(user_folder):
+        raise HTTPException(status_code=404, detail="Participant folder hasn't been created")
 
-    # simpan kembali file
-    with open(translation_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+    # path dataset excel
+    dataset_path = os.path.join(
+        base_dir,
+        "datasets",
+        "DatasetLanguage.xlsx"
+    )
 
-    return {"message": "Language information saved"}
+    if not os.path.exists(dataset_path):
+        raise HTTPException(status_code=404, detail="Dataset file not found")
 
+    # baca excel
+    df = pd.read_excel(dataset_path)
+
+    dominant_lang = normalize_language_name(data.dominantLanguage)
+
+    if dominant_lang not in df.columns:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Dominant language '{dominant_lang}' not found in dataset"
+        )
+
+    # generate temp id language
+    temp_id = random.randint(100000, 999999)
+
+    translations = []
+
+    for index, row in df.iterrows():
+
+        source_text = row[dominant_lang]
+        row_type = row["type"] if "type" in df.columns else "phrase"
+
+        if pd.isna(source_text):
+            continue
+
+        translations.append({
+            "row_position": int(index) + 2,
+            "type": row_type,
+            "source": source_text,
+            "translation": None
+        })
+
+    language_json = {
+        "tempIdLanguage": str(temp_id),
+        "languageName": data.languageName,
+        "dominantLanguage": data.dominantLanguage,
+        "translations": translations
+    }
+
+    filename = normalize_language_name(data.languageName) + ".json"
+
+    file_path = os.path.join(user_folder, filename)
+
+    if os.path.exists(file_path):
+        raise HTTPException(
+            status_code=400,
+            detail="Language name already exists"
+        )
+
+    with open(file_path, "w", encoding="utf-8") as f:
+        json.dump(language_json, f, indent=4, ensure_ascii=False)
+
+    return {
+        "status": "success",
+        "message": "Language added successfully",
+        "languageFile": filename,
+        "totalTranslations": len(translations)
+    }
 
 @app.get("/api/tutur/community/dataset/{idUser}")
 def get_translation_dataset(idUser: int, db: Session = Depends(get_db)):
@@ -1246,173 +1305,368 @@ def get_translation_dataset(idUser: int, db: Session = Depends(get_db)):
 
     return data
 
-class TranslationSaveRequest(BaseModel):
-    row_position: int
-    translation: str
+@app.get("/api/tutur/community/listLanguages/{idUser}")
+def list_languages(idUser: str, db: Session = Depends(get_db)):
 
+    user = db.query(User).filter(User.idUser == idUser).first()
 
-@app.post("/api/tutur/community/save/{idUser}")
-def save_translation(
-    idUser: int,
-    req: TranslationSaveRequest,
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.userReferenceFolderId:
+        raise HTTPException(status_code=400, detail="User not joined community")
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    user_folder = os.path.join(
+        base_dir,
+        "databases",
+        "activeParticipants",
+        user.userReferenceFolderId
+    )
+
+    if not os.path.exists(user_folder):
+        raise HTTPException(status_code=404, detail="Participant folder hasn't been created")
+
+    languages = []
+
+    for file in os.listdir(user_folder):
+
+        if file.endswith(".json"):
+
+            file_path = os.path.join(user_folder, file)
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+                languages.append(data)
+
+    return {
+        "status": "success",
+        "totalLanguages": len(languages),
+        "languages": languages
+    }
+
+@app.get("/api/tutur/community/listLanguages/{idUser}/{languageName}")
+def get_language(idUser: str, languageName: str, db: Session = Depends(get_db)):
+
+    user = db.query(User).filter(User.idUser == idUser).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if not user.userReferenceFolderId:
+        raise HTTPException(status_code=400, detail="User not joined community")
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    user_folder = os.path.join(
+        base_dir,
+        "databases",
+        "activeParticipants",
+        user.userReferenceFolderId
+    )
+
+    if not os.path.exists(user_folder):
+        raise HTTPException(status_code=404, detail="Participant folder hasn't been created")
+
+    language_target = normalize_language_name(languageName)
+
+    for file in os.listdir(user_folder):
+
+        if file.endswith(".json"):
+
+            file_path = os.path.join(user_folder, file)
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+                if normalize_language_name(data["languageName"]) == language_target:
+
+                    return {
+                        "status": "success",
+                        "language": data
+                    }
+
+    raise HTTPException(
+        status_code=404,
+        detail="Language not found"
+    )
+
+@app.get("/api/tutur/community/progress/{idUser}/{languageName}")
+def translation_progress(
+    idUser: str,
+    languageName: str,
     db: Session = Depends(get_db)
 ):
-    # validasi input
+
     user = db.query(User).filter(User.idUser == idUser).first()
 
-    
-    # cek user
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user.userParticipantStatus != "active":
-        raise HTTPException(status_code=400, detail="User is not a participant")
-    # cek file translation
-    folder_path = os.path.join(
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    user_folder = os.path.join(
+        base_dir,
         "databases",
         "activeParticipants",
         user.userReferenceFolderId
     )
-    translation_file = os.path.join(folder_path, "translation.json")
-    if not os.path.exists(translation_file):
-        raise HTTPException(status_code=404, detail="Translation file not found")
 
-    # buka file json
-    with open(translation_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    if not os.path.exists(user_folder):
+        raise HTTPException(status_code=404, detail="Participant folder hasn't been created")
 
-    updated = False
+    target_language = normalize_language_name(languageName)
 
-    for item in data["translations"]:
-        if item["row_position"] == req.row_position:
-            item["translation"] = req.translation
-            updated = True
-            break
+    for file in os.listdir(user_folder):
 
-    if not updated:
-        raise HTTPException(status_code=404, detail="Row position not found")
+        if file.endswith(".json"):
 
-    # simpan kembali file
-    with open(translation_file, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=4, ensure_ascii=False)
+            file_path = os.path.join(user_folder, file)
 
-    return {
-        "message": "Translation saved successfully",
-        "row_position": req.row_position
+            with open(file_path, "r", encoding="utf-8") as f:
+                data = json.load(f)
+
+                if normalize_language_name(data["languageName"]) == target_language:
+
+                    translations = data["translations"]
+
+                    total = len(translations)
+
+                    filled = sum(
+                        1 for t in translations
+                        if t["translation"] not in [None, "", "null"]
+                    )
+
+                    progress = round((filled / total) * 100, 2) if total > 0 else 0
+
+                    return {
+                        "status": "success",
+                        "languageName": data["languageName"],
+                        "totalRows": total,
+                        "translatedRows": filled,
+                        "progressPercent": progress
+                    }
+
+    raise HTTPException(status_code=404, detail="Language not found")
+
+@app.post("/api/tutur/community/updateTranslation/{idUser}/{languageName}")
+def update_translation(
+    idUser: str,
+    languageName: str,
+    data: UpdateTranslationRequest,
+    db: Session = Depends(get_db)
+):
+
+    user = db.query(User).filter(User.idUser == idUser).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    base_dir = os.path.dirname(os.path.abspath(__file__))
+
+    user_folder = os.path.join(
+        base_dir,
+        "databases",
+        "activeParticipants",
+        user.userReferenceFolderId
+    )
+
+    if not os.path.exists(user_folder):
+        raise HTTPException(status_code=404, detail="Participant folder hasn't been created")
+
+    target_language = normalize_language_name(languageName)
+
+    target_file = None
+    language_json = None
+
+    for file in os.listdir(user_folder):
+
+        if file.endswith(".json"):
+
+            file_path = os.path.join(user_folder, file)
+
+            with open(file_path, "r", encoding="utf-8") as f:
+                json_data = json.load(f)
+
+                if normalize_language_name(json_data["languageName"]) == target_language:
+                    target_file = file_path
+                    language_json = json_data
+                    break
+
+    if not target_file:
+        raise HTTPException(status_code=404, detail="Language not found")
+
+    translation_map = {
+        item.row_position: item.translation
+        for item in data.translations
     }
 
-@app.get("/api/tutur/community/progress/{idUser}")
-def get_translation_progress(idUser: int, db: Session = Depends(get_db)):
+    updated_count = 0
+
+    for row in language_json["translations"]:
+
+        pos = row["row_position"]
+
+        if pos in translation_map:
+
+            if translation_map[pos] is not None:
+                row["translation"] = translation_map[pos]
+                updated_count += 1
+
+    with open(target_file, "w", encoding="utf-8") as f:
+        json.dump(language_json, f, indent=4, ensure_ascii=False)
+
+    return {
+        "status": "success",
+        "message": "Translations updated successfully",
+        "updatedRows": updated_count
+    }
+
+@app.post("/api/tutur/community/save/{idUser}/{languageName}")
+def save_language(
+    idUser: str,
+    languageName: str,
+    db: Session = Depends(get_db)
+):
 
     user = db.query(User).filter(User.idUser == idUser).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user.userParticipantStatus != "active":
-        raise HTTPException(status_code=400, detail="User is not a participant")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    folder_path = os.path.join(
+    user_folder = os.path.join(
+        base_dir,
         "databases",
         "activeParticipants",
         user.userReferenceFolderId
     )
 
-    translation_file = os.path.join(folder_path, "translation.json")
+    if not os.path.exists(user_folder):
+        raise HTTPException(status_code=404, detail="Participant folder hasn't been created")
 
-    if not os.path.exists(translation_file):
-        raise HTTPException(status_code=404, detail="Translation file not found")
+    language_key = normalize_language_name(languageName)
 
-    with open(translation_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    json_path = os.path.join(user_folder, f"{language_key}.json")
 
-    translations = data["translations"]
+    if not os.path.exists(json_path):
+        raise HTTPException(status_code=404, detail="Json file not found")
+
+    with open(json_path, "r", encoding="utf-8") as f:
+        language_data = json.load(f)
+
+    translations = language_data["translations"]
 
     total = len(translations)
-    completed = sum(1 for item in translations if item["translation"] not in [None, ""])
+    filled = sum(
+        1 for t in translations
+        if t["translation"] not in [None, "", "null"]
+    )
 
-    progress_percent = round((completed / total) * 100, 2) if total > 0 else 0
+    progress = (filled / total) * 100 if total > 0 else 0
+
+    if progress < 100:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Translation progress not complete ({round(progress,2)}%)"
+        )
+
+    dataset_path = os.path.join(
+        base_dir,
+        "datasets",
+        "DatasetLanguage.xlsx"
+    )
+
+    if not os.path.exists(dataset_path):
+        raise HTTPException(status_code=404, detail="DatasetLanguage.xlsx not found")
+
+    df = pd.read_excel(dataset_path)
+
+    if language_key in df.columns:
+        raise HTTPException(status_code=400, detail="Language already exists")
+
+    insert_position = df.columns.get_loc("type")
+
+    df.insert(insert_position, language_key, "")
+
+    for t in translations:
+
+        row_index = t["row_position"] - 2
+        df.at[row_index, language_key] = t["translation"]
+
+    df.to_excel(dataset_path, index=False)
+
+    existing_language = db.query(Language).filter(
+        Language.languageName == languageName
+    ).first()
+
+    if not existing_language:
+
+        new_language = Language(
+            languageName=languageName,
+            languageType="local",
+            languageStatus="active"
+        )
+
+        db.add(new_language)
+        db.commit()
+        db.refresh(new_language)
+
+        language_id = new_language.idLanguage
+
+    else:
+        language_id = existing_language.idLanguage
 
     return {
-        "total": total,
-        "completed": completed,
-        "progress_percent": progress_percent
+        "status": "success",
+        "message": "Language saved successfully",
+        "languageName": languageName,
+        "idLanguage": language_id
     }
 
-@app.post("/api/tutur/community/submit/{idUser}")
-def submit_language(idUser: int, db: Session = Depends(get_db)):
+@app.delete("/api/tutur/community/delete/{idUser}/{languageName}")
+def delete_language(
+    idUser: str,
+    languageName: str,
+    db: Session = Depends(get_db)
+):
 
     user = db.query(User).filter(User.idUser == idUser).first()
 
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    if user.userParticipantStatus != "active":
-        raise HTTPException(status_code=400, detail="User is not a participant")
+    base_dir = os.path.dirname(os.path.abspath(__file__))
 
-    folder_path = os.path.join(
+    user_folder = os.path.join(
+        base_dir,
         "databases",
         "activeParticipants",
         user.userReferenceFolderId
     )
 
-    translation_file = os.path.join(folder_path, "translation.json")
+    if not os.path.exists(user_folder):
+        raise HTTPException(status_code=404, detail="Participant folder hasn't been created")
 
-    if not os.path.exists(translation_file):
-        raise HTTPException(status_code=404, detail="Translation file not found")
+    language_key = normalize_language_name(languageName)
 
-    with open(translation_file, "r", encoding="utf-8") as f:
-        data = json.load(f)
+    json_path = os.path.join(user_folder, f"{language_key}.json")
 
-    language_name = data.get("language_name")
+    if not os.path.exists(json_path):
+        raise HTTPException(status_code=404, detail="Language not found")
 
-    if not language_name:
-        raise HTTPException(status_code=400, detail="Language name not set")
-
-    translations = data["translations"]
-
-    # cek apakah semua translation sudah diisi
-    for item in translations:
-        if item["translation"] in [None, ""]:
-            raise HTTPException(
-                status_code=400,
-                detail="All translations must be completed before submit"
-            )
-
-    # baca dataset utama
-    df = pd.read_excel(DATASET_PATH)
-    df.columns = df.columns.str.lower()
-
-    new_column = []
-
-    for item in translations:
-        new_column.append(item["translation"])
-
-    if len(new_column) != len(df):
-        raise HTTPException(
-            status_code=400,
-            detail="Translation data does not match dataset length"
-        )
-
-    # tambah kolom bahasa baru
-    if language_name.lower() in df.columns:
-        raise HTTPException(
-            status_code=400,
-            detail="Language already exists in dataset"
-        )
-
-    # simpan dataset baru (backup)
-    new_file_name = f"DatasetLanguage_{language_name.lower()}.xlsx"
-
-    new_dataset_path = os.path.join(
-        os.path.dirname(DATASET_PATH),
-        new_file_name
-    )
-
-    df.to_excel(new_dataset_path, index=False)
+    os.remove(json_path)
 
     return {
-        "message": "Language successfully submitted",
-        "language": language_name,
-        "dataset_file": new_file_name
+        "status": "success",
+        "message": "Language deleted successfully",
+        "deletedLanguage": languageName
     }
+
+
+
+
+
+
