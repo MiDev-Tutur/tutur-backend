@@ -4,10 +4,12 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy import Enum, create_engine, Column, Integer, String, ForeignKey
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship, aliased
 from passlib.context import CryptContext
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from typing import List, Optional
 from typing import List, Optional
+from gtts import gTTS
 import pandas as pd
+import io
 import os
 import random
 import json
@@ -1665,7 +1667,36 @@ def delete_language(
         "deletedLanguage": languageName
     }
 
+LANGUAGE_MAP = {
+    "indonesia": "id",
+    "english": "en",
+    "malay": "ms",
+    "iban" : "ms",
+    "melayu_serawak" : "ms",
+}
 
+@app.get("/api/tutur/speak/{lang}")
+def generate_audio(
+    text: str,
+    lang: str
+):
+
+    if lang not in LANGUAGE_MAP:
+        lang = "id"
+
+    language_code = LANGUAGE_MAP.get(lang.lower(), "id")
+
+    mp3_fp = io.BytesIO()
+
+    tts = gTTS(text, lang=language_code)
+    tts.write_to_fp(mp3_fp)
+
+    mp3_fp.seek(0)
+
+    return StreamingResponse(
+        mp3_fp,
+        media_type="audio/mpeg"
+    )
 
 
 
