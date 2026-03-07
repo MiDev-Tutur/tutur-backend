@@ -1115,11 +1115,304 @@ def translate(req: TranslateRequest):
         "translated_text": model_result
     }
 
+# Community Participation Endpoints
+
+@app.post("/api/tutur/community/join/{idUser}")
+def join_community(idUser: int, db: Session = Depends(get_db)):
+
+    user = db.query(User).filter(User.idUser == idUser).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.userParticipantStatus == "active":
+        raise HTTPException(status_code=400, detail="User already participant")
+
+    # aktifkan status partisipan
+    user.userParticipantStatus = "active"
+    db.commit()
+
+    # buat folder base
+    base_path = os.path.join("databases", "activeParticipants")
+    os.makedirs(base_path, exist_ok=True)
+
+    # buat folder user
+    user_folder = os.path.join(base_path, user.userReferenceFolderId)
+    os.makedirs(user_folder, exist_ok=True)
+
+    translation_file = os.path.join(user_folder, "translation.json")
+
+    # baca dataset
+    df = pd.read_excel(DATASET_PATH)
+    df.columns = df.columns.str.lower()
+
+    if "row_position" not in df.columns:
+        df["row_position"] = df.index + 2
+
+    translations = []
+
+    for _, row in df.iterrows():
+
+        source_word = None
+
+        if "english" in df.columns:
+            source_word = row["english"]
+        elif "indonesian" in df.columns:
+            source_word = row["indonesian"]
+
+        translations.append({
+            "row_position": int(row["row_position"]),
+            "type": row["type"] if "type" in df.columns else "word",
+            "source": source_word,
+            "translation": None
+        })
+
+    data = {
+        "language_name": None,
+        "dominant_language": None,
+        "translations": translations
+    }
+
+    with open(translation_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+    return {
+        "message": "User successfully joined community",
+        "folder": user.userReferenceFolderId,
+        "total_items": len(translations)
+    }
 
 
+class SetLanguageRequest(BaseModel):
+    language_name: str
+    dominant_language: str
 
 
+@app.post("/api/tutur/community/set-language/{idUser}")
+def set_language(idUser: int, req: SetLanguageRequest, db: Session = Depends(get_db)):
+    # validasi input
+    user = db.query(User).filter(User.idUser == idUser).first()
 
 
+    # cek user
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    # cek status partisipan
+    folder_path = os.path.join(
+        "databases",
+        "activeParticipants",
+        user.userReferenceFolderId
+    )
+
+    # cek file translation
+    translation_file = os.path.join(folder_path, "translation.json")
+    with open(translation_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+    data["language_name"] = req.language_name
+    data["dominant_language"] = req.dominant_language
+
+    # simpan kembali file
+    with open(translation_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+    return {"message": "Language information saved"}
 
 
+@app.get("/api/tutur/community/dataset/{idUser}")
+def get_translation_dataset(idUser: int, db: Session = Depends(get_db)):
+
+    user = db.query(User).filter(User.idUser == idUser).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.userParticipantStatus != "active":
+        raise HTTPException(status_code=400, detail="User is not a participant")
+
+    folder_path = os.path.join(
+        "databases",
+        "activeParticipants",
+        user.userReferenceFolderId
+    )
+
+    translation_file = os.path.join(folder_path, "translation.json")
+
+    if not os.path.exists(translation_file):
+        raise HTTPException(status_code=404, detail="Translation file not found")
+
+    with open(translation_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    return data
+
+class TranslationSaveRequest(BaseModel):
+    row_position: int
+    translation: str
+
+
+@app.post("/api/tutur/community/save/{idUser}")
+def save_translation(
+    idUser: int,
+    req: TranslationSaveRequest,
+    db: Session = Depends(get_db)
+):
+    # validasi input
+    user = db.query(User).filter(User.idUser == idUser).first()
+
+    
+    # cek user
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.userParticipantStatus != "active":
+        raise HTTPException(status_code=400, detail="User is not a participant")
+    # cek file translation
+    folder_path = os.path.join(
+        "databases",
+        "activeParticipants",
+        user.userReferenceFolderId
+    )
+    translation_file = os.path.join(folder_path, "translation.json")
+    if not os.path.exists(translation_file):
+        raise HTTPException(status_code=404, detail="Translation file not found")
+
+    # buka file json
+    with open(translation_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    updated = False
+
+    for item in data["translations"]:
+        if item["row_position"] == req.row_position:
+            item["translation"] = req.translation
+            updated = True
+            break
+
+    if not updated:
+        raise HTTPException(status_code=404, detail="Row position not found")
+
+    # simpan kembali file
+    with open(translation_file, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
+
+    return {
+        "message": "Translation saved successfully",
+        "row_position": req.row_position
+    }
+
+@app.get("/api/tutur/community/progress/{idUser}")
+def get_translation_progress(idUser: int, db: Session = Depends(get_db)):
+
+    user = db.query(User).filter(User.idUser == idUser).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.userParticipantStatus != "active":
+        raise HTTPException(status_code=400, detail="User is not a participant")
+
+    folder_path = os.path.join(
+        "databases",
+        "activeParticipants",
+        user.userReferenceFolderId
+    )
+
+    translation_file = os.path.join(folder_path, "translation.json")
+
+    if not os.path.exists(translation_file):
+        raise HTTPException(status_code=404, detail="Translation file not found")
+
+    with open(translation_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    translations = data["translations"]
+
+    total = len(translations)
+    completed = sum(1 for item in translations if item["translation"] not in [None, ""])
+
+    progress_percent = round((completed / total) * 100, 2) if total > 0 else 0
+
+    return {
+        "total": total,
+        "completed": completed,
+        "progress_percent": progress_percent
+    }
+
+@app.post("/api/tutur/community/submit/{idUser}")
+def submit_language(idUser: int, db: Session = Depends(get_db)):
+
+    user = db.query(User).filter(User.idUser == idUser).first()
+
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+
+    if user.userParticipantStatus != "active":
+        raise HTTPException(status_code=400, detail="User is not a participant")
+
+    folder_path = os.path.join(
+        "databases",
+        "activeParticipants",
+        user.userReferenceFolderId
+    )
+
+    translation_file = os.path.join(folder_path, "translation.json")
+
+    if not os.path.exists(translation_file):
+        raise HTTPException(status_code=404, detail="Translation file not found")
+
+    with open(translation_file, "r", encoding="utf-8") as f:
+        data = json.load(f)
+
+    language_name = data.get("language_name")
+
+    if not language_name:
+        raise HTTPException(status_code=400, detail="Language name not set")
+
+    translations = data["translations"]
+
+    # cek apakah semua translation sudah diisi
+    for item in translations:
+        if item["translation"] in [None, ""]:
+            raise HTTPException(
+                status_code=400,
+                detail="All translations must be completed before submit"
+            )
+
+    # baca dataset utama
+    df = pd.read_excel(DATASET_PATH)
+    df.columns = df.columns.str.lower()
+
+    new_column = []
+
+    for item in translations:
+        new_column.append(item["translation"])
+
+    if len(new_column) != len(df):
+        raise HTTPException(
+            status_code=400,
+            detail="Translation data does not match dataset length"
+        )
+
+    # tambah kolom bahasa baru
+    if language_name.lower() in df.columns:
+        raise HTTPException(
+            status_code=400,
+            detail="Language already exists in dataset"
+        )
+
+    # simpan dataset baru (backup)
+    new_file_name = f"DatasetLanguage_{language_name.lower()}.xlsx"
+
+    new_dataset_path = os.path.join(
+        os.path.dirname(DATASET_PATH),
+        new_file_name
+    )
+
+    df.to_excel(new_dataset_path, index=False)
+
+    return {
+        "message": "Language successfully submitted",
+        "language": language_name,
+        "dataset_file": new_file_name
+    }
