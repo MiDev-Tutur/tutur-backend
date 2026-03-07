@@ -59,6 +59,14 @@ device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 model.to(device)
 model.eval()
 
+LANGUAGE_MAP = {
+    "indonesia": "id",
+    "english": "en",
+    "malay": "ms",
+    "iban" : "ms",
+    "melayu_serawak" : "ms",
+}
+
 class TranslateRequest(BaseModel):
     text: str
     target_language: str
@@ -1666,14 +1674,8 @@ def delete_language(
         "message": "Language deleted successfully",
         "deletedLanguage": languageName
     }
-
-LANGUAGE_MAP = {
-    "indonesia": "id",
-    "english": "en",
-    "malay": "ms",
-    "iban" : "ms",
-    "melayu_serawak" : "ms",
-}
+    
+# TTS Endpoint
 
 @app.get("/api/tutur/speak/{lang}")
 def generate_audio(
