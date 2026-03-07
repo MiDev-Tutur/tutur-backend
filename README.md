@@ -8,6 +8,7 @@
 
 - [Prerequisites](#prerequisites)
 - [Installation](#installation)
+- [Database Setup](#database-setup)
 - [NLP Model Setup](#nlp-model-setup) *(Optional)*
 - [Running the Server](#running-the-server)
 
@@ -34,6 +35,45 @@ pip install -r requirements.txt
 
 ---
 
+## Database Setup
+
+The backend requires a local MySQL database to function properly. Follow the steps below to set it up.
+
+1. Make sure **XAMPP** (or any local server with phpMyAdmin) is installed and running, with both **Apache** and **MySQL** services active.
+
+2. Open your browser and navigate to:
+
+   ```
+   http://localhost/phpmyadmin
+   ```
+
+3. Log in using the **default credentials**:
+
+   | Field    | Value   |
+   |----------|---------|
+   | Username | `root`  |
+   | Password | *(leave blank)* |
+
+4. Create a new database named:
+
+   ```
+   db_tutur
+   ```
+
+5. Select the newly created database, then go to the **Import** tab.
+
+6. Click **Choose File** and select the SQL file located at:
+
+   ```
+   databases/db_tutur.sql
+   ```
+
+7. Click **Go** to import the database.
+
+Once the import is complete, the backend server will be able to connect to the database.
+
+---
+
 ## NLP Model Setup
 
 > ⚠️ **Optional** — Only required if you want to test the **Natural Language Translation** endpoint.
@@ -54,7 +94,7 @@ pip install -r requirements.txt
 
 ## Running the Server
 
-Once all dependencies are installed, start the backend server by running the following command in the **project root directory**:
+Once all dependencies are installed and the database is configured, start the backend server by running the following command in the **project root directory**:
 
 ```bash
 uvicorn apiGateway:app --reload
@@ -70,7 +110,9 @@ The server will start and hot-reload automatically on any code changes.
 project-root/
 ├── apiGateway.py
 ├── requirements.txt
-└── translator_model_lite/    # Optional: place extracted NLP model here
+├── databases/
+│   └── db_tutur.sql              # Import this file into phpMyAdmin
+└── translator_model_lite/        # Optional: place extracted NLP model here
 ```
 
 ---
