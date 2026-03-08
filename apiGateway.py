@@ -1,5 +1,6 @@
 import hashlib
 from fastapi import FastAPI, HTTPException, Depends, Path
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
 from sqlalchemy import Enum, create_engine, Column, Integer, String, ForeignKey
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship, aliased
@@ -21,6 +22,15 @@ MODEL_PATH = "./translator_model_lite"
 
 app = FastAPI(title="Tutur API Gateway")
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:5173"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+
 DATASET_PATH = os.path.join(
     os.path.dirname(os.path.abspath(__file__)),
     "datasets",
@@ -41,13 +51,11 @@ Base = declarative_base()
 
 pwd_context = CryptContext(schemes=["argon2"], deprecated="auto")
 
-app = FastAPI()
-
 if not os.path.exists(DATASET_PATH):
     raise FileNotFoundError("DatasetLanguage.xlsx not found in datasets folder")
 
-df = pd.read_excel(DATASET_PATH)
-df.columns = df.columns.str.lower()
+df = pd.read_excel(DATASET_PATH, keep_default_na=False)
+df["row_position"] = df.index + 2
 
 if "english" not in df.columns:
     raise Exception("Dataset must contain 'english' column")
@@ -83,6 +91,10 @@ class User(Base):
 
 class UserCreate(BaseModel):
     userName: str
+    userEmail: EmailStr
+    userPassword: str
+
+class UserLogin(BaseModel):
     userEmail: EmailStr
     userPassword: str
 
@@ -219,30 +231,34 @@ def get_dictionary(dominant: str, local: str):
 
 @app.post("/api/tutur/users")
 def create_user(user: UserCreate, db: Session = Depends(get_db)):
+    try:
+        existing_user = db.query(User).filter(User.userEmail == user.userEmail).first()
+        if existing_user:
+            raise HTTPException(status_code=400, detail="Email already registered")
 
-    existing_user = db.query(User).filter(User.userEmail == user.userEmail).first()
-    if existing_user:
-        raise HTTPException(status_code=400, detail="Email already registered")
+        hashed_password = pwd_context.hash(user.userPassword)
+        userReferenceFolderId = f"folder_{hashlib.sha256(user.userEmail.encode()).hexdigest()[:8]}"
 
-    hashed_password = pwd_context.hash(user.userPassword)
-    userReferenceFolderId = f"folder_{hashlib.sha256(user.userEmail.encode()).hexdigest()[:8]}"
+        new_user = User(
+            userName=user.userName,
+            userEmail=user.userEmail,
+            userPassword=hashed_password,
+            userParticipantStatus="nonactive",
+            userReferenceFolderId=userReferenceFolderId
+        )
 
-    new_user = User(
-        userName=user.userName,
-        userEmail=user.userEmail,
-        userPassword=hashed_password,
-        userParticipantStatus="nonactive",
-        userReferenceFolderId=userReferenceFolderId
-    )
+        db.add(new_user)
+        db.commit()
+        db.refresh(new_user)
 
-    db.add(new_user)
-    db.commit()
-    db.refresh(new_user)
-
-    return {
-        "message": "User created successfully",
-        "idUser": new_user.idUser
-    }
+        return {
+            "message": "User created successfully",
+            "idUser": new_user.idUser
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(500, str(e))
 
 @app.get("/api/tutur/users/{idUser}")
 def get_user(idUser: int, db: Session = Depends(get_db)):
@@ -297,6 +313,33 @@ def delete_user(idUser: int, db: Session = Depends(get_db)):
     db.commit()
 
     return {"message": "User deleted successfully"}
+
+@app.post("/api/tutur/login")
+def login(user: UserLogin, db: Session = Depends(get_db)):
+    try:
+        existing_user = db.query(User).filter(User.userEmail == user.userEmail).first()
+
+        if existing_user:
+            if not pwd_context.verify(user.userPassword, existing_user.userPassword):
+                raise HTTPException(status_code=400, detail="Email or password not valid")
+
+            return {
+                "message": "Login successful",
+                "idUser": existing_user.idUser,
+                "userName": existing_user.userName,
+                "userEmail": existing_user.userEmail,
+                "status": existing_user.userParticipantStatus
+            }
+        else:
+            raise HTTPException(status_code=400, detail="Email or password not valid")
+
+    except HTTPException as e:
+        print("HTTP ERROR:", e.detail)
+        raise
+
+    except Exception as e:
+        print("SERVER ERROR:", str(e))
+        raise HTTPException(status_code=500, detail="Internal Server Error")
 
 # User Courses Management Endpoints
 
@@ -681,78 +724,82 @@ def find_step(courses, step):
 @app.get("/api/tutur/course/{dominant}/{local}")
 def get_all_course(dominant: str, local: str):
 
-    if dominant not in df.columns or local not in df.columns:
-        raise HTTPException(status_code=400, detail="Language column not found")
+    try:
+        if dominant not in df.columns or local not in df.columns:
+            raise HTTPException(status_code=400, detail="Language column not found")
 
-    if not os.path.exists(COURSE_PATH):
-        raise HTTPException(status_code=404, detail="Course file not found")
+        if not os.path.exists(COURSE_PATH):
+            raise HTTPException(status_code=404, detail="Course file not found")
 
-    with open(COURSE_PATH, "r", encoding="utf-8") as f:
-        courses = json.load(f)
+        with open(COURSE_PATH, "r", encoding="utf-8") as f:
+            courses = json.load(f)
 
-    result = []
+        result = []
 
-    for topic in courses.values():
-        for item in topic:
+        for topic in courses.values():
+            for item in topic:
 
-            step = item["step"]
+                step = item["step"]
 
-            if "listWords" in item:
+                if "listWords" in item:
 
-                rows = item["listWords"]
-                words_df = df[df["row_position"].isin(rows)]
+                    rows = item["listWords"]
+                    words_df = df[df["row_position"].isin(rows)]
 
-                questions = generate_word_questions(words_df, dominant, local)
+                    questions = generate_word_questions(words_df, dominant, local)
 
-            elif "listPhrases" in item:
+                elif "listPhrases" in item:
 
-                prev_step = find_step(courses, step - 1)
+                    prev_step = find_step(courses, step - 1)
 
-                if not prev_step:
+                    if not prev_step:
+                        continue
+
+                    phrase_df = df[df["row_position"].isin(item["listPhrases"])]
+                    word_df = df[df["row_position"].isin(prev_step["listWords"])]
+
+                    questions = generate_phrase_questions(
+                        phrase_df,
+                        word_df,
+                        dominant,
+                        local
+                    )
+
+                elif "listSentences" in item:
+
+                    word_step = find_step(courses, step - 2)
+
+                    if not word_step:
+                        continue
+
+                    sentence_df = df[df["row_position"].isin(item["listSentences"])]
+                    word_df = df[df["row_position"].isin(word_step["listWords"])]
+
+                    questions = generate_sentence_questions(
+                        sentence_df,
+                        word_df,
+                        dominant,
+                        local
+                    )
+
+                else:
                     continue
 
-                phrase_df = df[df["row_position"].isin(item["listPhrases"])]
-                word_df = df[df["row_position"].isin(prev_step["listWords"])]
+                result.append({
+                    "step": step,
+                    "questions": questions
+                })
 
-                questions = generate_phrase_questions(
-                    phrase_df,
-                    word_df,
-                    dominant,
-                    local
-                )
+        result = sorted(result, key=lambda x: x["step"])
 
-            elif "listSentences" in item:
-
-                word_step = find_step(courses, step - 2)
-
-                if not word_step:
-                    continue
-
-                sentence_df = df[df["row_position"].isin(item["listSentences"])]
-                word_df = df[df["row_position"].isin(word_step["listWords"])]
-
-                questions = generate_sentence_questions(
-                    sentence_df,
-                    word_df,
-                    dominant,
-                    local
-                )
-
-            else:
-                continue
-
-            result.append({
-                "step": step,
-                "questions": questions
-            })
-
-    result = sorted(result, key=lambda x: x["step"])
-
-    return {
-        "total_step": len(result),
-        "total_questions": len(result) * 10,
-        "courses": result
-    }
+        return {
+            "total_step": len(result),
+            "total_questions": len(result) * 10,
+            "courses": result
+        }
+    except Exception as e:
+        print(e)
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/tutur/course/{step}/{dominant}/{local}")
 def get_course_by_step(step: int, dominant: str, local: str):
@@ -852,7 +899,7 @@ def generate_urban_legend_test(lang: str, title: str):
         raise HTTPException(status_code=400, detail="Invalid language parameter")
 
     file_path = os.path.join(URBAN_LEGENDS_PATH, f"{lang}.json")
-
+    
     if not os.path.exists(file_path):
         raise HTTPException(status_code=404, detail="Language file not found")
 
@@ -1699,6 +1746,7 @@ def generate_audio(
         mp3_fp,
         media_type="audio/mpeg"
     )
+
 
 
 
