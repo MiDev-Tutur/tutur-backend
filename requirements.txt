@@ -6,3 +6,4 @@ pandas
 torch
 transformers
 pydantic
+gtts
