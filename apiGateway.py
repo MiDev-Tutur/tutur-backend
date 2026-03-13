@@ -1,8 +1,9 @@
 import hashlib
 from fastapi import FastAPI, HTTPException, Depends, Path
+from dotenv import load_dotenv
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, EmailStr
-from sqlalchemy import Enum, create_engine, Column, Integer, String, ForeignKey
+from sqlalchemy import Enum, create_engine, Column, Integer, String, ForeignKey, func
 from sqlalchemy.orm import sessionmaker, declarative_base, Session, relationship, aliased
 from passlib.context import CryptContext
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -20,11 +21,15 @@ from transformers import T5Tokenizer, T5ForConditionalGeneration
 
 MODEL_PATH = "./translator_model_lite"
 
+load_dotenv()
+
 app = FastAPI(title="Tutur API Gateway")
+
+origins = os.getenv("CORS_ORIGINS")
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:5173"],
+    allow_origins=origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -39,7 +44,7 @@ DATASET_PATH = os.path.join(
 COURSE_PATH = os.path.join("courses", "courses.json")
 URBAN_LEGENDS_PATH = os.path.join("datasets", "urbanLegends")
 BASE_DATASET_PATH = os.path.join("datasets", "folkSongs")
-DATABASE_URL = "mysql+pymysql://root@localhost/db_tutur"
+DATABASE_URL = os.getenv("DATABASE_URL")
 
 engine = create_engine(
     DATABASE_URL,
@@ -445,6 +450,82 @@ def delete_course(idCourse: int, db: Session = Depends(get_db)):
     return {
         "message": "Course deleted successfully"
     }
+
+@app.get("/api/tutur/courses/user/{idUser}/{dominant}/{local}")
+def get_course_by_userid(idUser: int, dominant: str, local: str, db: Session = Depends(get_db)):
+
+    DominantLanguage = aliased(Language)
+    LocalLanguage = aliased(Language)
+
+    result = (
+        db.query(Course, User, DominantLanguage, LocalLanguage)
+        .join(User, Course.idUser == User.idUser)
+        .join(DominantLanguage, Course.idDominantLanguage == DominantLanguage.idLanguage)
+        .join(LocalLanguage, Course.idLocalLanguage == LocalLanguage.idLanguage)
+        .filter(
+            Course.idUser == idUser,
+            func.lower(func.replace(DominantLanguage.languageName, " ", "_")) == dominant,
+            func.lower(func.replace(LocalLanguage.languageName, " ", "_")) == local
+        )
+        .first()
+    )
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    course, user, dominant_language, local_language = result
+
+    def to_dict(obj):
+        return {c.name: getattr(obj, c.name) for c in obj.__table__.columns}
+
+    return {
+        "idCourse": course.idCourse,
+        "idUser": course.idUser,
+        "idDominantLanguage": course.idDominantLanguage,
+        "idLocalLanguage": course.idLocalLanguage,
+        "courseStep": course.courseStep,
+        "detail": {
+            "user": to_dict(user),
+            "dominantLanguage": to_dict(dominant_language),
+            "localLanguage": to_dict(local_language)
+        }
+    }
+
+@app.patch("/api/tutur/courses/{idUser}/{dominant}/{local}")
+def update_course_level(idUser: int, dominant: str, local: str, db: Session = Depends(get_db)):
+
+    DominantLanguage = aliased(Language)
+    LocalLanguage = aliased(Language)
+
+    result = (
+        db.query(Course, DominantLanguage, LocalLanguage)
+        .join(DominantLanguage, Course.idDominantLanguage == DominantLanguage.idLanguage)
+        .join(LocalLanguage, Course.idLocalLanguage == LocalLanguage.idLanguage)
+        .filter(
+            Course.idUser == idUser,
+            func.lower(func.replace(DominantLanguage.languageName, " ", "_")) == dominant,
+            func.lower(func.replace(LocalLanguage.languageName, " ", "_")) == local
+        )
+        .first()
+    )
+
+    if not result:
+        raise HTTPException(status_code=404, detail="Course not found")
+
+    course, dominant_language, local_language = result
+
+    course.courseStep += 1
+
+    db.commit()
+    db.refresh(course)
+
+    return {
+        "message": "Course updated",
+        "courseStep": course.courseStep,
+        "dominantLanguage": dominant_language.languageName,
+        "localLanguage": local_language.languageName
+    }
+
 
 # Language Management Endpoints
 

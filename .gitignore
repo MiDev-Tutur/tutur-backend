@@ -1,3 +1,4 @@
 translator_model_lite/*
 __pycache__/
 *.pyc
+.env
